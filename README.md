@@ -11,7 +11,24 @@ It's one static page (`index.html`) with no build step. Tabs:
 - **Cheatsheets**: governor limits, triggers, order of execution, SOQL, testing, async Apex, LWC, CLI, Agentforce, exam weights
 - **Interview prep**, **Quiz**, **Job hunt**
 
-Progress, quiz answers, story drafts and the job log are saved in your browser's local storage: they stay on the device and browser you use.
+Progress, quiz answers, story drafts and the job log are saved in your browser's local storage. To carry them across devices, turn on sync (below).
+
+## Sync across devices
+
+A Cloudflare Worker (`sync-worker/`) stores one copy of your progress in Cloudflare KV at `https://salesforce-trail-sync.eyasug.workers.dev/progress`. It only answers requests that carry your sync key, and only from this site's origin.
+
+- **Turn it on:** click **Sync off** in the header and paste your sync key. Do this once per browser. The key is in `.sync-key` in this folder; it's git-ignored, so it never reaches GitHub.
+- **How it works:** changes upload about a second after you make them. When the page opens or you switch back to the tab, it downloads newer progress from your other devices. If two devices change things at the same moment, the last save wins.
+- **First connect on a browser that already has progress:** you're asked whether to keep the synced copy or this browser's.
+- **Turn it off:** click the sync button and clear the box.
+
+Redeploy the Worker after editing it:
+
+```bash
+cd sync-worker && npx wrangler deploy
+```
+
+Change the key with `npx wrangler secret put SYNC_KEY` (inside `sync-worker/`), save it to `.sync-key`, and paste it into each browser again.
 
 ## Deploy to GitHub Pages
 

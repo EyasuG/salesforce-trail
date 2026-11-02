@@ -1,0 +1,10 @@
+{
+  "name": "salesforce-trail-sync",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "kv_namespaces": [
+    { "binding": "PROGRESS", "id": "cf2b040c524048658e1388a0cd96fb88" }
+  ]
+  // SYNC_KEY is a secret: npx wrangler secret put SYNC_KEY
+}

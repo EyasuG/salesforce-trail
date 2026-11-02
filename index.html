@@ -43,6 +43,10 @@ header{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var
 .brand h1{font-family:var(--f-display);font-weight:700;font-size:1.35rem;margin:0;letter-spacing:-.01em;text-wrap:balance}
 .brand p{margin:0;color:var(--muted);font-size:.82rem}
 .counts{display:flex;flex-wrap:wrap;gap:8px}
+.top-right{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.sync{display:inline-flex;align-items:center;gap:7px;font-size:.78rem;padding:6px 11px;color:var(--muted)}
+.sync i{width:8px;height:8px;border-radius:50%;background:var(--rest);flex:none}
+.sync.on i{background:var(--good)} .sync.busy i{background:var(--accent)} .sync.err i{background:var(--gate)}
 .count{display:flex;flex-direction:column;padding:6px 12px;border-radius:8px;background:var(--sunk);min-width:92px}
 .count b{font-family:var(--f-display);font-size:1.15rem;font-variant-numeric:tabular-nums;line-height:1.2}
 .count span{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
@@ -222,7 +226,10 @@ details.level .lv-body{padding:0 16px 16px}
       <h1>Salesforce Trail</h1>
       <p id="phaseLine">PD1 → Agentforce Specialist → Salesforce Developer role</p>
     </div>
-    <div class="counts" id="counts"></div>
+    <div class="top-right">
+      <div class="counts" id="counts"></div>
+      <button type="button" class="sync" id="syncBtn" title="Sync progress across devices"><i></i><span>Sync off</span></button>
+    </div>
   </div>
   <div class="wrap">
     <nav aria-label="Sections">
@@ -1332,8 +1339,89 @@ const OLD_CARDS = [
 /* ---------- storage (per-browser, guarded) ---------- */
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('sft:'+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
-  set(k, v){ try{ localStorage.setItem('sft:'+k, JSON.stringify(v)); }catch(e){} }
+  set(k, v){ try{ localStorage.setItem('sft:'+k, JSON.stringify(v)); }catch(e){} sync.changed(); }
 };
+
+/* ---------- cross-device sync (Cloudflare Worker + KV, see sync-worker/) ---------- */
+const sync = (() => {
+  const URL_ = 'https://salesforce-trail-sync.eyasug.workers.dev/progress';
+  const KEY = 'sftsync:key', TS = 'sftsync:ts';
+  const ls = {
+    get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+    set(k, v){ try{ v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); }catch(e){} }
+  };
+  let timer = null, pushing = false;
+
+  const key = () => ls.get(KEY);
+  const localTs = () => Number(ls.get(TS) || 0);
+  function localData(){
+    const out = {};
+    try{ for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); if (k.startsWith('sft:')) out[k.slice(4)] = localStorage.getItem(k); } }catch(e){}
+    return out;
+  }
+  function applyRemote(r){
+    try{
+      Object.keys(localData()).forEach(k => localStorage.removeItem('sft:'+k));
+      Object.entries(r.data).forEach(([k, v]) => localStorage.setItem('sft:'+k, v));
+    }catch(e){}
+    ls.set(TS, String(r.ts));
+    location.reload();
+  }
+  function status(cls, text){
+    const b = document.getElementById('syncBtn'); if (!b) return;
+    b.className = 'sync ' + cls; b.querySelector('span').textContent = text;
+  }
+  async function call(method, body){
+    const res = await fetch(URL_, { method, headers: { 'Authorization': 'Bearer ' + key(), 'Content-Type': 'application/json' }, body: body && JSON.stringify(body), cache: 'no-store', keepalive: method === 'PUT' });
+    if (res.status === 401) throw Object.assign(new Error('bad key'), { auth: true });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+  function fail(e){ status('err', e.auth ? 'Wrong sync key' : 'Sync offline'); }
+
+  async function push(){
+    if (!key()) return;
+    clearTimeout(timer); timer = null; pushing = true; status('busy', 'Saving…');
+    try{ await call('PUT', { ts: localTs(), data: localData() }); status('on', 'Synced'); }
+    catch(e){ fail(e); }
+    finally{ pushing = false; }
+  }
+  async function pull(first){
+    if (!key() || timer || pushing) return;
+    status('busy', 'Syncing…');
+    try{
+      const r = await call('GET');
+      const hasLocal = Object.keys(localData()).length > 0;
+      if (first && hasLocal && r.ts && !confirm('Synced progress found.\n\nOK: use the synced copy on this browser.\nCancel: keep this browser\'s progress and overwrite the synced copy.')){
+        ls.set(TS, String(Date.now())); return push();
+      }
+      if (r.ts > localTs()) return applyRemote(r);
+      if (localTs() > r.ts || (!r.ts && hasLocal)){ if (!localTs()) ls.set(TS, String(Date.now())); return push(); }
+      status('on', 'Synced');
+    }catch(e){ fail(e); }
+  }
+
+  return {
+    changed(){
+      ls.set(TS, String(Date.now()));
+      if (!key()) return;
+      status('busy', 'Saving…');
+      clearTimeout(timer); timer = setTimeout(push, 1200);
+    },
+    start(){
+      document.getElementById('syncBtn')?.addEventListener('click', () => {
+        const v = prompt(key() ? 'Sync is on. Paste a new sync key, or clear the box to turn sync off on this browser.' : 'Paste your sync key to sync progress across devices.', key() || '');
+        if (v === null) return;
+        ls.set(KEY, v.trim() || null);
+        if (!v.trim()){ status('', 'Sync off'); return; }
+        ls.set(TS, null); pull(true);
+      });
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pull(false); else if (timer) push(); });
+      window.addEventListener('pagehide', () => { if (timer) push(); });
+      if (key()) pull(false); else status('', 'Sync off');
+    }
+  };
+})();
 
 /* ---------- dates ---------- */
 const DAY = 864e5;
@@ -2119,6 +2207,7 @@ document.addEventListener('submit', e => {
 });
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); route(); });
 rerenderAll();
+sync.start();
 </script>
 
 </body>
